@@ -324,6 +324,7 @@ static void stampa_menu(void) {
     Serial.printf("8 = MOTOR LOCK: Richiesta posizione On-Demand + rientro guidato\n");
     Serial.printf("9 -> poi 1: Entra in MODIFICA parametri -> Scegli Servo\n");
     Serial.printf("9 -> poi 0: Esegue l'UPGRADE inviando i nuovi parametri via CAN\n");
+    Serial.printf("9 -> poi 9: Test sinusoide di verifica (freq=0.1Hz, ampiezza=40°) su tutti gli slave\n");
     Serial.printf("------------------------------------------------------------------------\n");
 }
 
@@ -382,14 +383,45 @@ static void gestisci_comando_principale(int comando) {
             break;
         case 9:
             stato_seriale = STATO_MENU_9;
-            Serial.printf("\n[CONFIG 9] Scegli -> (1: Personalizza Servo) | (0: Upgrade): ");
+            Serial.printf("\n[CONFIG 9] Scegli -> (1: Personalizza Servo) | (0: Upgrade) | (9: Test sinusoide uguale su tutti): ");
             break;
         default:
             stampa_menu();
             break;
     }
 }
+static void esegui_test_sinusoide_uguale(void) {
+    const float TEST_FREQ_HZ   = 0.1f;
+    const float TEST_AMP_GRADI = 40.0f;
+    const float TEST_SFAS_RAD  = 0.0f;
+    const float TEST_OFF_GRADI = 0.0f;
 
+    for (int i = 0; i < 3; i++) {
+        xSemaphoreTake(mutex_slave[i], portMAX_DELAY);
+        parametri_slave[i].frequenza_hz      = TEST_FREQ_HZ;
+        parametri_slave[i].ampiezza_passi    = TEST_AMP_GRADI * GRADI_A_PASSI;
+        parametri_slave[i].sfasamento_rad    = TEST_SFAS_RAD;
+        parametri_slave[i].offset_gradi      = TEST_OFF_GRADI;
+
+        // Allinea anche i buffer, cosi' non restano parametri "vecchi" in sospeso
+        parametri_slave[i].buf_frequenza      = TEST_FREQ_HZ;
+        parametri_slave[i].buf_ampiezza_passi = TEST_AMP_GRADI * GRADI_A_PASSI;
+        parametri_slave[i].buf_sfasamento_rad = TEST_SFAS_RAD;
+        parametri_slave[i].buf_offset_gradi   = TEST_OFF_GRADI;
+        parametri_slave[i].ha_nuovi_parametri = false;
+        xSemaphoreGive(mutex_slave[i]);
+    }
+
+    home_in_corso = false;
+    onda_attiva   = true;
+    stato_motore  = MOTORE_NORMALE;
+    offset_manuale_gradi = 0.0f;
+
+    invia_a_tutti_gli_slave();
+
+    Serial.printf("\n[TEST] Sinusoide di verifica inviata a tutti gli slave: freq=%.2fHz ampiezza=%.1f° sfas=0 offset=0\n",
+                  TEST_FREQ_HZ, TEST_AMP_GRADI);
+}
 static void salva_buffer_parametri(const char *testo, uint8_t id_servo) {
     float f = 0.0f, amp = 0.0f, sfas = 0.0f, off = 0.0f;
     uint8_t idx = id_servo - 1;
@@ -473,12 +505,17 @@ void gestisci_seriale(void) {
                             Serial.printf("\n[UPGRADE] Parametri aggiornati e inviati per %d segmenti.\n", cont);
                             stato_seriale = STATO_ATTESA_COMANDO;
                             stampa_menu();
-                        } else {
+                        } else if (scelta == 9) {
+                        esegui_test_sinusoide_uguale();
+                        stato_seriale = STATO_ATTESA_COMANDO;
+                        stampa_menu();
+                        }
+                        else {
                             stato_seriale = STATO_ATTESA_COMANDO;
                             stampa_menu();
                         }
                         break;
-                    }
+                        }
 
                     case STATO_SELEZIONE_SERVO_MODIFICA: {
                         int id_scelto = atoi(riga_buffer);
